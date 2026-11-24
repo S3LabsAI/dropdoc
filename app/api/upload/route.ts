@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { nanoid } from "nanoid";
 import { storeReport } from "@/lib/store";
+import { refuseWrite } from "@/lib/upload-access";
 import { sanitizeReport, extractTitle } from "@/lib/sanitize";
 import { rewriteAssets, type AssetNotice } from "@/lib/rewrite-assets";
 import { looksLikePdf, extractPdfTitle } from "@/lib/pdf";
@@ -8,14 +9,8 @@ import { MAX_FILE_SIZE, MAX_FILE_SIZE_MB } from "@/lib/limits";
 import { ACCEPTED_LABEL, filenameStem, kindForFilename } from "@/lib/report-kind";
 
 export async function POST(request: NextRequest) {
-  // Optional upload protection
-  const uploadSecret = process.env.UPLOAD_SECRET;
-  if (uploadSecret) {
-    const provided = request.headers.get("x-upload-secret");
-    if (provided !== uploadSecret) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-  }
+  const refusal = refuseWrite(request);
+  if (refusal) return refusal;
 
   const formData = await request.formData();
   const files = formData.getAll("files") as File[];

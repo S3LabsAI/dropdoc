@@ -8,12 +8,61 @@ export async function GET(
   const { slug } = await params;
   const report = await getReport(slug);
 
-  if (!report) {
-    return new NextResponse("Report not found", { status: 404 });
-  }
+  if (!report) return unavailableResponse();
 
   return report.kind === "pdf" ? pdfResponse(report) : htmlResponse(report.html);
 }
+
+// Shown for any slug with nothing behind it — never uploaded, since removed, or the store itself
+// is unreachable. The people who land here were sent a link by someone else, so it says what to
+// do next rather than just "404". Not cached: a report that comes back should show up at once.
+function unavailableResponse() {
+  return new NextResponse(UNAVAILABLE_PAGE, {
+    status: 404,
+    headers: {
+      "Content-Type": "text/html; charset=utf-8",
+      "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'",
+      "X-Content-Type-Options": "nosniff",
+      "X-Robots-Tag": "noindex",
+      "Cache-Control": "no-store",
+    },
+  });
+}
+
+const UNAVAILABLE_PAGE = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Report unavailable · DropDoc</title>
+<style>
+  :root { color-scheme: light dark; --bg: #ffffff; --fg: #09090b; --muted: #52525b; --line: #dfe9f1; --brand: #2e9df1; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0a0e14; --fg: #fafafa; --muted: #a1a8b3; --line: #1f2732; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 32px 20px;
+    background: var(--bg); color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  main { max-width: 460px; text-align: center; }
+  .mark { font-size: 13px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--brand); margin: 0 0 20px; }
+  h1 { margin: 0 0 14px; font-size: 28px; line-height: 1.2; letter-spacing: -0.01em; text-wrap: balance; }
+  p { margin: 0; font-size: 16px; line-height: 1.6; color: var(--muted); text-wrap: pretty; }
+  hr { border: 0; border-top: 1px solid var(--line); margin: 28px auto; width: 56px; }
+</style>
+</head>
+<body>
+<main>
+  <p class="mark">DropDoc</p>
+  <h1>This report isn&rsquo;t available</h1>
+  <p>The link may have expired or the report may have been removed.</p>
+  <hr>
+  <p>Ask the person who sent it to you for a current copy.</p>
+</main>
+</body>
+</html>
+`;
 
 function htmlResponse(html: string) {
   // `sandbox allow-scripts allow-popups` forces the document into an opaque/null origin so

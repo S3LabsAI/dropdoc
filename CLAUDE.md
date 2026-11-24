@@ -19,8 +19,8 @@ DropDoc is a single-purpose Next.js 16 (App Router) + React 19 tool for uploadin
 
 ### Upload → serve pipeline
 
-1. `app/page.tsx` — client-only drag-and-drop UI. Posts **one `FormData` request per file** to `/api/upload` (so each request body stays under Vercel's 4.5MB function limit no matter how many files are dropped) and pre-checks extension + size client-side before sending, then aggregates errors/notices/new-entries across the responses. Known slugs are persisted in `sessionStorage` under `reports:v1`; there is no server-side user/account model. Entries written before PDF support carry no `kind` and are normalized to `"html"` on read, so don't bump the session key for that. Surfaces per-file `notices` from the upload response when references were rewritten or stripped.
-2. `app/api/upload/route.ts` — resolves the file's kind by extension (`kindForFilename`), enforces the 3.5MB per-file cap (`MAX_FILE_SIZE` in `lib/limits.ts`), then branches:
+1. `app/uploader.tsx` — client-only drag-and-drop UI, rendered by `app/page.tsx` **only where uploads are open** (local dev — see Auth below); every deployment renders `app/closed.tsx` instead. Posts **one `FormData` request per file** to `/api/upload` (so each request body stays under Vercel's 4.5MB function limit no matter how many files are dropped) and pre-checks extension + size client-side before sending, then aggregates errors/notices/new-entries across the responses. Known slugs are persisted in `sessionStorage` under `reports:v1`; there is no server-side user/account model. Entries written before PDF support carry no `kind` and are normalized to `"html"` on read, so don't bump the session key for that. Surfaces per-file `notices` from the upload response when references were rewritten or stripped.
+2. `app/api/upload/route.ts` — refuses the request unless writes are allowed (`refuseWrite`, see Auth below), then resolves the file's kind by extension (`kindForFilename`), enforces the 3.5MB per-file cap (`MAX_FILE_SIZE` in `lib/limits.ts`), then branches:
    - **HTML** — runs `rewriteAssets` to fix sibling-file references from "Save Page As"–style exports, sanitizes the body with `sanitizeReport`, extracts `<title>` for display. Returns per-file `notices` describing any rewrites or removals.
    - **PDF** — checks the file really is a PDF (`looksLikePdf`, magic bytes) and rejects it otherwise, then reads a display title with `extractPdfTitle`, falling back to the filename. Bytes are stored untouched; `notices` is always empty.
 
@@ -28,7 +28,7 @@ DropDoc is a single-purpose Next.js 16 (App Router) + React 19 tool for uploadin
 3. `lib/rewrite-assets.ts` — pre-sanitization compatibility layer for HTML only. Maps relative `<script src>` and `<link rel=stylesheet href>` references to known-library CDN URLs (Chart.js, D3, Leaflet, Plotly, Highcharts, ECharts, jQuery, etc.). Unrecognized relative references are stripped, with the basename surfaced to the uploader. Absolute URLs (`http(s):`, `//`, `data:`, `blob:`) pass through. This is a *compatibility* layer, not a *security* layer — the sanitizer + CSP sandbox below are still what enforce safety.
 4. `lib/pdf.ts` — the PDF counterpart to `sanitize.ts`, minus the sanitizing: a signature check plus a best-effort title read from the Info dictionary (literal, hex, UTF-16, and PDFDocEncoding strings) falling back to the XMP packet. Titles inside compressed object streams aren't recovered — nothing is inflated — and anything that doesn't decode to plausible text is rejected so the filename wins instead.
 5. `lib/store.ts` — Vercel Blob wrapper. Two objects per report: `reports/<slug>.<html|pdf>` (sanitized body, or the PDF verbatim) and `meta/<slug>.json` (title, filename, timestamp, blob URL, `kind`). Uses `addRandomSuffix: false` so slugs map 1:1 to blob keys. A slug alone doesn't reveal its extension, so reads and deletes probe both paths **in parallel** — one round trip either way, and no dependency on the metadata blob, which older reports may be missing. Metadata without a `kind` field predates PDF support and is read as HTML (`normalizeKind`).
-6. `app/r/[slug]/route.ts` — serves the stored report. HTML gets the sandbox CSP (see next section); PDF gets `application/pdf` + `nosniff` + `Content-Disposition: inline` and deliberately **no** sandbox — see the comment in `pdfResponse` before changing those headers. Both cached public for 1h.
+6. `app/r/[slug]/route.ts` — serves the stored report. HTML gets the sandbox CSP (see next section); PDF gets `application/pdf` + `nosniff` + `Content-Disposition: inline` and deliberately **no** sandbox — see the comment in `pdfResponse` before changing those headers. Both cached public for 1h. A slug with nothing behind it gets a small self-contained "This report isn't available" page (404, `no-store`) rather than a bare error — the people who hit it were sent the link by someone else.
 7. `app/api/reports/[slug]/route.ts` — DELETE endpoint; removes the content blob (whichever extension it's under) and the metadata blob.
 
 ### The security boundary, part 1: HTML — sanitizer + CSP sandbox (both are required)
@@ -60,7 +60,14 @@ Two things worth knowing before you touch this:
 
 ### Auth
 
-Upload and delete are gated by an optional `UPLOAD_SECRET` env var, checked via the `x-upload-secret` header. If the env var is unset, both endpoints are open — fine for local dev, not for production.
+Writes (upload and delete) are **fail-closed**; `lib/upload-access.ts` is the single place that decides:
+
+- `UPLOAD_SECRET` set — the request must carry it in the `x-upload-secret` header, else 401.
+- `UPLOAD_SECRET` unset — refused with 403 everywhere except `next dev`, where writes stay open so local work needs no setup.
+
+So a deployment with no secret is read-only: it serves existing `/r/<slug>` links and accepts nothing. That is the intended production posture. The browser UI sends no secret, which is why `app/page.tsx` only renders the uploader when `uploadsOpen()` is true (dev, no secret) and shows the closed notice otherwise; with a secret set, uploads are API-only.
+
+Don't restore the old "unset means open" default. It made the production site anonymous public HTML hosting — scripts allowed, free to call out to any `https:` host — which is exactly what phishing kits look for, and one abusive upload is enough to get the whole domain flagged by browser safe-browsing lists. Reopening uploads to browsers needs real per-user auth first, not a shared secret shipped to the client.
 
 ### Deployment assumption
 
